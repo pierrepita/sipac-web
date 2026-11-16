@@ -1,0 +1,14 @@
+.openai/
+tmp/
+dist/
+node_modules/
+*.zip
+*.pdf
+*.part
+exemplo/
+documentos/
+indice.html
+processo.json
+documentos.csv
+.DS_Store
+Thumbs.db
