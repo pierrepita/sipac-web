@@ -2,6 +2,8 @@
 
 Versão inteiramente estática para **GitHub Pages**, com um favorito automatizador que executa a coleta dentro da aba do SIPAC. Não utiliza servidor externo, Python, GitHub Actions como serviço de consulta ou conta do GitHub de quem vai usar.
 
+**Acesse o site: [pierrepita.github.io/sipac-web](https://pierrepita.github.io/sipac-web/)**
+
 ## Como usar
 
 1. Abra o site publicado no GitHub Pages.
