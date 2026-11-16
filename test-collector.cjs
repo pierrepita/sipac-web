@@ -6,7 +6,35 @@ const utf8 = new TextEncoder();
 test('aceita NUP completo e rejeita entradas incompletas',()=>{
   assert.equal(core.number('23066026112202679'),'23066.026112/2026-79');
   assert.equal(core.number(' 23066.026112/2026-79 '),'23066.026112/2026-79');
+  assert.equal(core.number('006904/23-84'),'23066.006904/2023-84');
+  assert.equal(core.number(' 006904/23-84 '),'23066.006904/2023-84');
+  assert.equal(core.number('23066.006904/2023-84'),'23066.006904/2023-84');
+  assert.equal(core.number('000001/00-00'),'23066.000001/2000-00');
   for(const n of ['026112','23066.026112/2026','../arquivo','<script>',''])assert.throws(()=>core.number(n));
+});
+test('controle CAE tem as 17 colunas e usa recebimento no destino CAE',()=>{
+  const r={processo:'23066.006904/2023-84',cabecalho:{'Unidade de Origem':'DEPARTAMENTO DE CIRURGIA/FMB (12.01.21.22)','Assunto Detalhado':'Proposta de Criação do Programa de Residência Médica em Cirurgia Cardiovascular','Data de Autuação':'07/02/2023 11:20'},movimentacoes:{colunas:['Data Origem','Unidade Origem','Unidade Destino','Recebido Em'],linhas:[['19/02/2026','PROPG','CONSELHO ACADÊMICO DE ENSINO /UFBA','23/02/2026 11:33'],['14/10/2026','CAE/UFBA','CARE','20/10/2026'],['01/01/2026','X','CGAE','02/01/2026']]}};
+  const c=core.buildCae(r);
+  assert.deepEqual(c.colunas,['Processo','Nível','Unidade de Origem','Título','Relator','Tipo','Sugestão de prazo','Data Abertura','Data Recebimento','Data Distribuição','Data Parecer','Dias até Parecer','Data Apreciação','Situação','Parecer','Final','OBS']);
+  assert.deepEqual(c.valores,['006904/23-84','PÓS','FMB - Faculdade de Medicina',r.cabecalho['Assunto Detalhado'],'A definir','Criação de curso','30','07/02/2023','23/02/2026','A definir','A definir','A definir','A definir','Em análise','A definir','A definir','A definir']);
+  assert.equal(core.controlTsv(c).split('\t').length,17);
+  assert.equal(core.controlTsv(c,true).split('\r\n').length,2);
+  assert.ok(core.renderControl(c).includes('data-cae-copy'));
+});
+test('controle não adivinha nível ou datas e usa o recebimento CAE mais recente',()=>{
+  const r={processo:'23066.006904/2023-84',cabecalho:{'Data de Autuação':'31/02/2023'},movimentacoes:{colunas:['Destino','Recebido Em'],linhas:[['CAE','31/02/2026'],['CAE','15/01/2025'],['CAE','23/02/2026']]}};
+  const c=core.buildCae(r);assert.equal(c.valores[1],'A definir');assert.equal(c.valores[5],'A definir');assert.equal(c.valores[7],'A definir');assert.equal(c.valores[8],'23/02/2026');
+  r.movimentacoes.linhas=[['PROPG','23/02/2026']];assert.equal(core.buildCae(r).valores[8],'A definir');
+  assert.equal(core.shortNumber('12345.006904/2023-84'),'12345.006904/2023-84');
+  assert.equal(core.shortNumber('23066.006904/1923-84'),'23066.006904/1923-84');
+});
+test('TSV do controle conserva colunas e impede fórmulas injetadas',()=>{
+  const c=core.buildCae(record());c.valores[3]='=FORMULA()\tsegunda\nlinha';
+  assert.equal(core.controlTsv(c).split('\t').length,17);
+  assert.ok(core.controlTsv(c).includes("'=FORMULA() segunda linha"));
+  assert.ok(!core.controlTsv(c).includes('\n'));
+  c.valores[3]='"><img src=x onerror=x>';
+  assert.ok(!core.renderControl(c).includes('<img'));
 });
 test('restringe consultas à área pública da UFBA',()=>{
   assert.equal(core.safeURL('/public/jsp/portal.jsf'),'https://sipac.ufba.br/public/jsp/portal.jsf');
