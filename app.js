@@ -3,8 +3,10 @@ const $ = id => document.getElementById(id);
 let bookmarkURL = "";
 function normalize(value) {
   value = value.trim();
+  const short = /^(\d{6})\/(\d{2})-(\d{2})$/.exec(value);
+  if (short) value = "23066."+short[1]+"/20"+short[2]+"-"+short[3];
   if (/^\d{17}$/.test(value)) value = value.slice(0,5)+"."+value.slice(5,11)+"/"+value.slice(11,15)+"-"+value.slice(15);
-  if (!/^\d{5}\.\d{6}\/\d{4}-\d{2}$/.test(value)) throw new Error("Informe o número completo, como 23066.026112/2026-79.");
+  if (!/^\d{5}\.\d{6}\/\d{4}-\d{2}$/.test(value)) throw new Error("Informe 23066.006904/2023-84 ou 006904/23-84.");
   return value;
 }
 (async () => {
