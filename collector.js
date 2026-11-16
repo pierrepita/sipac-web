@@ -12,10 +12,97 @@
 
   function number(value) {
     value = String(value || "").trim();
+    const short = /^(\d{6})\/(\d{2})-(\d{2})$/.exec(value);
+    if (short) value = "23066."+short[1]+"/20"+short[2]+"-"+short[3];
     if (/^\d{17}$/.test(value)) value = value.slice(0,5)+"."+value.slice(5,11)+"/"+value.slice(11,15)+"-"+value.slice(15);
-    if (!/^\d{5}\.\d{6}\/\d{4}-\d{2}$/.test(value)) throw new Error("Informe o número completo, como 23066.026112/2026-79.");
+    if (!/^\d{5}\.\d{6}\/\d{4}-\d{2}$/.test(value)) throw new Error("Informe 23066.006904/2023-84 ou 006904/23-84.");
     return value;
   }
+  const CONTROL_FIELDS = ["Processo","Nível","Unidade de Origem","Título","Relator","Tipo","Sugestão de prazo","Data Abertura","Data Recebimento","Data Distribuição","Data Parecer","Dias até Parecer","Data Apreciação","Situação","Parecer","Final","OBS"];
+  function dateOnly(value) {
+    const m=/\b(\d{2})\/(\d{2})\/(\d{4})\b/.exec(clean(value));
+    if(!m)return '';
+    const d=new Date(Date.UTC(Number(m[3]),Number(m[2])-1,Number(m[1])));
+    return d.getUTCFullYear()===Number(m[3])&&d.getUTCMonth()===Number(m[2])-1&&d.getUTCDate()===Number(m[1])?m[0]:'';
+  }
+  function shortNumber(value) {
+    const m=/^23066\.(\d{6})\/20(\d{2})-(\d{2})$/.exec(value);
+    return m?m[1]+'/'+m[2]+'-'+m[3]:value;
+  }
+  function buildCae(record) {
+    const values=Object.fromEntries(CONTROL_FIELDS.map(k=>[k,'A definir'])),sources={};
+    const h=Object.fromEntries(Object.entries(record.cabecalho || {}).map(([k,v])=>[fold(clean(k)),clean(v)]));
+    const get=(...keys)=>{for(const k of keys)if(h[fold(k)])return[h[fold(k)],k];return['',''];};
+    values.Processo=shortNumber(record.processo);sources.Processo='Número consultado; forma reduzida da UFBA.';
+    const [title,titleSource]=get('Assunto Detalhado','Título','Assunto do Processo','Assunto');
+    if(title){values['Título']=title;sources['Título']='Cabeçalho: '+titleSource;}
+    const [unit,unitSource]=get('Unidade de Origem','Unidade Origem');
+    if(unit){const name=unit.replace(/\s*\([\d.]+\)\s*$/,'');values['Unidade de Origem']=['faculdade de medicina','faculdade de medicina da bahia','fmb'].includes(fold(name))||/\/fmb\b/.test(fold(name))?'FMB - Faculdade de Medicina':unit;sources['Unidade de Origem']=values['Unidade de Origem']!==unit?'Unidade de origem agrupada como FMB a partir de: '+unit:'Cabeçalho: '+unitSource;}
+    const text=fold(title+' '+get('Assunto do Processo','Assunto')[0]);
+    if(/\bpos\b|mestrado|doutorado|especializa|residencia/.test(text))values['Nível']='PÓS';
+    else if(text.includes('graduacao'))values['Nível']='GRAD';
+    if(text.includes('criacao')&&/curso|programa|residencia/.test(text))values.Tipo='Criação de curso';
+    else if(/alteracao curricular|reformulacao curricular|reforma curricular/.test(text))values.Tipo='Alteração curricular';
+    for(const k of ['Nível','Tipo'])if(values[k]!=='A definir')sources[k]='Sugestão por palavras do assunto; conferir antes de colar.';
+    for(const k of ['Data de Abertura','Data Abertura','Data de Autuação','Data de Cadastro']){const date=dateOnly(h[fold(k)]);if(date){values['Data Abertura']=date;sources['Data Abertura']='Cabeçalho: '+k;break;}}
+    const movements=record.movimentacoes || {},cols=(movements.colunas || []).map(c=>fold(clean(c)));
+    const dest=cols.findIndex(c=>['unidade destino','unidade de destino','destino'].includes(c)),received=cols.findIndex(c=>['recebido em','data de recebimento','data recebimento'].includes(c));
+    const dates=[];
+    if(dest>=0&&received>=0)for(const row of movements.linhas || []){const target=fold(row[dest] || ''),date=dateOnly(row[received]);if((/\bcae\b/.test(target)||target.includes('conselho academico de ensino'))&&date)dates.push(date);}
+    if(dates.length){values['Data Recebimento']=dates.sort((a,b)=>a.split('/').reverse().join('').localeCompare(b.split('/').reverse().join(''))).at(-1);sources['Data Recebimento']='Recebimento mais recente em tramitação com destino ao CAE.';}
+    values['Sugestão de prazo']='30';sources['Sugestão de prazo']='Valor inicial informado pelo usuário, em dias; ajustar ao caso.';
+    values['Situação']='Em análise';sources['Situação']='Valor inicial do controle; não é o status do SIPAC.';
+    return {colunas:CONTROL_FIELDS.slice(),valores:CONTROL_FIELDS.map(k=>values[k]),fontes:sources};
+  }
+  function controlTsv(control,header=false) {
+    const cell=value=>{value=clean(value);return /^[=+@-]/.test(value)?"'"+value:value;};
+    const line=control.valores.map(cell).join('\t');
+    return header?control.colunas.join('\t')+'\r\n'+line:line;
+  }
+  function renderControl(control) {
+    const rows=control.colunas.map((label,i)=>'<tr><th><label data-cae-label for="cae-'+i+'">'+esc(label)+'</label></th><td><input id="cae-'+i+'" data-cae-value value="'+esc(control.valores[i])+'" aria-label="'+esc(label)+'"></td></tr>').join('');
+    const sources=Object.entries(control.fontes).map(([k,v])=>'<li><b>'+esc(k)+':</b> '+esc(v)+'</li>').join('');
+    return CONTROL_TEMPLATE.replace('<table></table>',()=>'<table>'+rows+'</table>').replace('<ul></ul>',()=>'<ul>'+sources+'</ul>');
+  }
+
+  const CONTROL_TEMPLATE = "<section data-cae class=\"cae-control\"><style>.cae-control{margin:24px 0;padding:18px;border:1px solid #cbdcd5;border-radius:10px;background:#f5faf7}.cae-control h2{margin:0 0 8px;font-size:19px}.cae-control p{font-size:13px}.cae-control table{width:100%;border-collapse:collapse}.cae-control th{width:36%;text-align:left}.cae-control th,.cae-control td{padding:7px;border-bottom:1px solid #dce4e6}.cae-control input{box-sizing:border-box;width:100%;min-width:140px;padding:8px;border:1px solid #b6cac3;border-radius:5px;font:13px Arial,sans-serif;background:white;color:#203649}.cae-scroll{max-height:320px;overflow:auto}.cae-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.cae-control button{cursor:pointer;border:0;border-radius:6px;padding:10px 12px;background:#147b68;color:white;font:700 13px Arial,sans-serif}.cae-control textarea{box-sizing:border-box;width:100%;min-height:80px}.cae-control details{margin:12px 0;font:13px/1.5 Arial,sans-serif}.cae-control [hidden]{display:none!important}</style><h2>Planilha de controle CAE</h2><p>17 colunas na ordem da sua planilha. Revise os dados sugeridos. Campos sem evidência e campos de acompanhamento começam como “A definir”. O prazo inicial é de 30 dias.</p><details><summary>Revisar os 17 campos</summary><div class=\"cae-scroll\"><table></table></div></details><div class=\"cae-actions\"><button type=\"button\" data-cae-copy>Copiar linha para planilha</button><button type=\"button\" data-cae-headers>Copiar cabeçalhos</button></div><p data-cae-status role=\"status\">Cole na primeira coluna de uma linha vazia da planilha.</p><textarea data-cae-fallback aria-label=\"Texto para copiar para a planilha\" readonly hidden></textarea><details><summary>Como os campos foram preenchidos</summary><ul></ul><p>A revisão altera a linha copiada nesta página. O arquivo controle-cae.tsv guarda o preenchimento inicial. Não são calculadas datas futuras nem dias até parecer.</p></details></section>";
+function installCaeControls(root) {
+  for (const section of root.querySelectorAll('[data-cae]')) {
+    if (section.dataset.caeReady) continue;
+    section.dataset.caeReady = '1';
+    const inputs = Array.from(section.querySelectorAll('[data-cae-value]'));
+    const safe = value => {
+      value = String(value || '').replace(/\s+/g, ' ').trim();
+      return /^[=+@-]/.test(value) ? "'" + value : value;
+    };
+    const line = () => inputs.map(input => safe(input.value)).join('\t');
+    const fallback = section.querySelector('[data-cae-fallback]');
+    const status = section.querySelector('[data-cae-status]');
+    const copy = async value => {
+      fallback.value = value;
+      try {
+        if (!navigator.clipboard?.writeText) throw new Error('Cópia manual');
+        await navigator.clipboard.writeText(value);
+        fallback.hidden = true;
+        status.textContent = 'Copiado. Cole na primeira coluna de uma linha vazia da planilha.';
+      } catch {
+        fallback.hidden = false;
+        fallback.focus();
+        fallback.select();
+        status.textContent = 'O navegador não permitiu a cópia automática. Copie o texto selecionado abaixo e cole na planilha.';
+      }
+    };
+    section.querySelector('[data-cae-copy]').addEventListener('click', () => copy(line()));
+    section.querySelector('[data-cae-headers]').addEventListener('click', () => copy(Array.from(section.querySelectorAll('[data-cae-label]')).map(label => label.textContent).join('\t')));
+    for (const input of inputs) input.addEventListener('input', () => {
+      fallback.value = line();
+      status.textContent = 'Dados revisados nesta página. Clique em Copiar linha para planilha.';
+    });
+  }
+}
+
+  const CONTROL_SCRIPT = "("+installCaeControls.toString()+")(document);";
+
   function safeURL(value, base = BASE) {
     const u = new URL(value, base);
     if (u.origin !== BASE || u.username || u.password || !u.pathname.startsWith("/public/")) throw new Error("Endereço fora da consulta pública do SIPAC/UFBA.");
@@ -140,6 +227,7 @@
   }
   function report(record) {
     let body = '<p class="muted">SIPAC Web · cópia local da consulta pública</p><h1>Processo '+esc(record.processo)+'</h1><p class="muted">Consulta em '+esc(record.consultado_em)+' · <a href="'+esc(record.fonte)+'">Ver no SIPAC</a></p><p class="note"><b>'+record.total_salvo+' de '+record.total_listado+' documentos listados com todas as versões acessíveis salvas.</b><br>O resultado cobre a lista apresentada na consulta pública. Itens totalmente ocultos não podem ser enumerados.</p><h2>Cabeçalho</h2>'+fieldTable(record.cabecalho);
+    body += renderControl(record.controle_cae || buildCae(record));
     if (record.interessados.linhas.length) body += '<h2>Interessados</h2>'+gridTable(record.interessados);
     body += '<h2>Documentos e despachos</h2><div class="scroll"><table><thead><tr><th>Ordem</th><th>Documento e descrição</th><th>Data / origem</th><th>Arquivos locais</th><th>Resultado</th></tr></thead><tbody>';
     for (const d of record.documentos) {
@@ -151,7 +239,7 @@
     if (record.movimentacoes.linhas.length) body += '<h2>Movimentações</h2>'+gridTable(record.movimentacoes);
     const notes = record.documentos.flatMap(d=>[...d.erros,...d.avisos].map(v=>'Documento '+d.ordem+': '+v));
     if (notes.length) body += '<h2>Pendências e observações</h2><ul>'+notes.map(n=>'<li>'+esc(n)+'</li>').join("")+'</ul>';
-    return page(record.processo,body+'<p class="muted">Mantenha este índice e a pasta documentos juntos. PDFs foram preservados como recebidos. Documentos eletrônicos em HTML têm uma cópia passiva do conteúdo exibido.</p>');
+    return page(record.processo,body+'<p class="muted">Mantenha este índice e a pasta documentos juntos. PDFs foram preservados como recebidos. Documentos eletrônicos em HTML têm uma cópia passiva do conteúdo exibido.</p>').replace('</body>','<script src="./controle-cae.js" defer></script></body>');
   }
   function csv(record) {
     const cell = v => {v=String(v ?? "");if (/^[\s]*[=+@-]/.test(v))v="'"+v;return '"'+v.replace(/"/g,'""')+'"';};
@@ -191,7 +279,7 @@
     if(links.size!==1)throw new Error(links.size?'A consulta retornou resultados ambíguos.':'Processo não localizado na consulta pública. Confira o número no SIPAC.');
     response=await request([...links][0]);doc=requireContent(parse(response));
     const header=fields(doc);if(header.Processo!==process)throw new Error('O número do cabeçalho não corresponde ao solicitado.');
-    const record={versao:'1.0',processo:process,consultado_em:new Date().toISOString(),fonte:response.url,escopo:'consulta_publica',cabecalho:header,interessados:grid(doc,'Interessados Deste Processo'),movimentacoes:grid(doc,'Movimentações do Processo'),documentos:[]};
+    const record={versao:'1.1',processo:process,consultado_em:new Date().toISOString(),fonte:response.url,escopo:'consulta_publica',cabecalho:header,interessados:grid(doc,'Interessados Deste Processo'),movimentacoes:grid(doc,'Movimentações do Processo'),documentos:[]};
     const seenPages=new Set();let declaredTotal=null;
     for(let count=0;count<200;count++){
       const footer=tableNamed(doc,'Documentos do Processo')?.tFoot;
@@ -236,6 +324,8 @@
     await Promise.all([worker(),worker()]);
     for(const d of record.documentos.filter(d=>d.acoes.length&&(d.erros.length||d.avisos.some(v=>v.startsWith('Dados complementares:'))))){notify('Tentando novamente os itens ausentes do documento '+d.ordem+'…',done,record.total_listado);await download(d);}
     record.total_salvo=record.documentos.filter(d=>d.status==='baixado').length;record.total_arquivos=record.documentos.reduce((n,d)=>n+d.arquivos.length,0);record.pendencias=record.documentos.filter(d=>d.erros.length||d.avisos.length).length;record.concluido_em=new Date().toISOString();
+    record.controle_cae=buildCae(record);
+    add('controle-cae.tsv','\uFEFF'+controlTsv(record.controle_cae,true)+'\r\n');add('controle-cae.js',CONTROL_SCRIPT);
     add('indice.html',report(record));add('documentos.csv',csv(record));add('processo.json',JSON.stringify(record,null,2));
     return {record,entries};
   }
@@ -255,21 +345,22 @@
     if(global.location.origin!==BASE){global.alert('Abra a consulta pública do SIPAC/UFBA e clique no favorito “Baixar SIPAC” nessa aba.');return;}
     const existing=global.document.getElementById('sipac-web-panel');if(existing){existing.scrollIntoView();return;}
     let input=new URLSearchParams(global.location.hash.slice(1)).get('sipac-web');
-    if(!input)input=global.prompt('Número completo do processo:',fields(global.document).Processo || '');if(!input)return;
+    if(!input)input=global.prompt('Processo (23066.006904/2023-84 ou 006904/23-84):',fields(global.document).Processo || '');if(!input)return;
     let process;try{process=number(input);}catch(error){global.alert(error.message);return;}
     const host=global.document.createElement('div');host.id='sipac-web-panel';host.style.cssText='position:fixed;right:22px;bottom:22px;z-index:2147483647;width:min(440px,calc(100vw - 30px));';const shadow=host.attachShadow({mode:'open'});
-    shadow.innerHTML='<style>:host{all:initial}.panel{font:14px/1.5 Arial,sans-serif;background:white;color:#20394a;border:1px solid #cad9d8;border-radius:16px;box-shadow:0 14px 70px #102c4340;padding:24px}h2{margin:0 0 7px;font-size:20px}p{margin:8px 0;overflow-wrap:anywhere}.muted{color:#657a85;font-size:12px}progress{width:100%;height:8px;margin:16px 0;accent-color:#147d6b}button,a{font:700 13px Arial,sans-serif;border:0;border-radius:8px;padding:12px 15px;cursor:pointer;text-decoration:none}button{background:#edf1f3;color:#3c5665}a{display:block;background:#147d6b;color:white;text-align:center;margin:14px 0}a[hidden]{display:none}.error{color:#9b4d24}.row{display:flex;justify-content:space-between;align-items:center;gap:12px}details{font-size:11px;color:#677c85;margin:12px 0}ol{max-height:140px;overflow:auto;padding-left:20px}</style><div class="panel" role="dialog" aria-label="SIPAC Web"><div class="row"><h2>SIPAC Web</h2><button id="close" type="button">Cancelar</button></div><p id="process"></p><p id="status" role="status">Iniciando consulta…</p><progress id="progress"></progress><p class="muted" id="summary">Mantenha esta aba aberta durante a consulta.</p><a id="download" hidden>Baixar ZIP do processo</a><details><summary>Detalhes da consulta</summary><ol id="log"></ol></details><p class="muted">A coleta ocorre neste navegador. Os documentos não são enviados ao GitHub. Depois do download, extraia o ZIP e abra indice.html.</p></div>';
+    shadow.innerHTML='<style>:host{all:initial}.panel{font:14px/1.5 Arial,sans-serif;background:white;color:#20394a;border:1px solid #cad9d8;border-radius:16px;box-shadow:0 14px 70px #102c4340;padding:24px;max-height:85vh;overflow:auto}h2{margin:0 0 7px;font-size:20px}p{margin:8px 0;overflow-wrap:anywhere}.muted{color:#657a85;font-size:12px}progress{width:100%;height:8px;margin:16px 0;accent-color:#147d6b}button,a{font:700 13px Arial,sans-serif;border:0;border-radius:8px;padding:12px 15px;cursor:pointer;text-decoration:none}button{background:#edf1f3;color:#3c5665}a{display:block;background:#147d6b;color:white;text-align:center;margin:14px 0}a[hidden]{display:none}.error{color:#9b4d24}.row{display:flex;justify-content:space-between;align-items:center;gap:12px}details{font-size:11px;color:#677c85;margin:12px 0}ol{max-height:140px;overflow:auto;padding-left:20px}</style><div class="panel" role="dialog" aria-label="SIPAC Web"><div class="row"><h2>SIPAC Web</h2><button id="close" type="button">Cancelar</button></div><p id="process"></p><p id="status" role="status">Iniciando consulta…</p><progress id="progress"></progress><p class="muted" id="summary">Mantenha esta aba aberta durante a consulta.</p><a id="download" hidden>Baixar ZIP do processo</a><div id="cae" hidden></div><details><summary>Detalhes da consulta</summary><ol id="log"></ol></details><p class="muted">A coleta ocorre neste navegador. Os documentos não são enviados ao GitHub. Depois do download, extraia o ZIP e abra indice.html.</p></div>';
     global.document.body.append(host);shadow.getElementById('process').textContent=process;
     const controller=new AbortController();let finished=false,objectURL;
     shadow.getElementById('close').onclick=()=>{if(!finished){controller.abort();return;}if(objectURL)URL.revokeObjectURL(objectURL);host.remove();};
     try{
       const result=await collect(process,{signal:controller.signal,progress:(message,done,total)=>{shadow.getElementById('status').textContent=message;const p=shadow.getElementById('progress');if(total){p.max=total;p.value=done;}const li=global.document.createElement('li');li.textContent=message;shadow.getElementById('log').append(li);}});
+      const control=shadow.getElementById('cae');control.innerHTML=renderControl(result.record.controle_cae);control.hidden=false;installCaeControls(shadow);
       const blob=makeZip(result.entries);objectURL=URL.createObjectURL(blob);const a=shadow.getElementById('download');a.href=objectURL;a.download=slug(process)+'.zip';a.hidden=false;
       shadow.getElementById('status').textContent='Consulta concluída.';shadow.getElementById('summary').textContent=result.record.total_salvo+' de '+result.record.total_listado+' documentos listados salvos · '+result.record.total_arquivos+' arquivos de conteúdo · '+result.record.pendencias+' pendências.';
     }catch(error){shadow.getElementById('status').textContent=error.name==='AbortError'?'Consulta cancelada.':error.message;shadow.getElementById('status').className='error';shadow.getElementById('summary').textContent='Você pode fechar este painel e tentar novamente. Nenhum pacote foi apresentado como completo.';}
     finally{finished=true;shadow.getElementById('close').textContent='Fechar';}
   }
-  const api={number,safeURL,slug,parse,fields,formFields,documents,nextPage,safeFragment,extension,report,csv,collect,crc32,makeZip,run};
+  const api={number,shortNumber,buildCae,controlTsv,renderControl,installCaeControls,CONTROL_SCRIPT,CONTROL_FIELDS,safeURL,slug,parse,fields,formFields,documents,nextPage,safeFragment,extension,report,csv,collect,crc32,makeZip,run};
   if(typeof module==='object'&&module.exports){module.exports=api;return;}
   global.SipacWebCore=api;
   if(!global.document.currentScript?.hasAttribute('data-library'))void run();
